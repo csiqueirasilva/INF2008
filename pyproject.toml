@@ -1,0 +1,55 @@
+[tool.poetry]
+name = "spine-segmentation"
+version = "0.1.0"
+description = "Spine segmentation helper"
+authors = ["Caio Siqueira <csiqueira@puc-rio.br>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+  { include = "spine_segmentation", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+click = "^8.1"
+torch = "^2.7.0"
+transformers = "^4.30"
+numpy = ">=1.25,<2.0"
+pandas = "^2.0"
+pysqlite3-binary = "^0.5.4"
+psycopg2-binary = "^2.9.10"
+langchain-ollama = "^0.3.2"
+tqdm = "^4.67.1"
+torchvision = "^0.22.0"
+torchaudio = "^2.7.0"
+scikit-learn = "^1.6.1"
+keybert = "^0.9.0"
+nltk = "^3.9.1"
+sentence-transformers = "^4.1.0"
+bertopic = "^0.17.0"
+hf-xet = "^1.1.0"
+matplotlib = "^3.10.3"
+umap-learn = "^0.5.7"
+hdbscan = "^0.8.40"
+scipy = "^1.15.3"
+opencv-python-headless = "<4.12"
+nibabel = "^5.3.2"
+diffdrr = "^0.5.1"
+imageio = "^2.37.0"
+torchio = "^0.20.21"
+scikit-image = "^0.25.2"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4"
+black = "^24.3"
+flake8 = "^6.0"
+
+[tool.poetry.scripts]
+spine = "spine_segmentation.cli:cli"
+
+[tool.poetry.group.dev.dependencies]
+debugpy = "^1.8.14"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
