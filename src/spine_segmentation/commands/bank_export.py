@@ -23,11 +23,21 @@ def bank_export(bank, out_dir, limit):
     for i, m in enumerate(metas):
         m = m.item() if isinstance(m, np.ndarray) else m
         subj = make_subject_from_paths(m["ct"], m["seg"], mask_volume=m.get("masked", True))
+        # Some banks were built with auto FOV, storing delx as NaN. Recompute consistently.
+        auto_fov = bool(m.get("auto_fov", False))
+        delx = m.get("delx", float("nan"))
+        try:
+            import math
+            finite_delx = math.isfinite(float(delx))
+        except Exception:
+            finite_delx = False
+
         img = render_drr(
             subj,
             yaw=m["yaw"], pitch=m["pitch"], roll=m["roll"],
             tx=m["tx"],  ty=m["ty"],   tz=m["tz"],
-            sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev
+            sdd=m["sdd"], height=m["height"], delx=(float(delx) if finite_delx else 1.0), dev=dev,
+            auto_fov=auto_fov or not finite_delx,
         )
         prev_dir = out_dir / "previews" / f"{i:06d}"
         prev_dir.mkdir(parents=True, exist_ok=True)

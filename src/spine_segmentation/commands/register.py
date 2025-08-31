@@ -53,17 +53,32 @@ def register(bank, frame, out, iters, topk, debug_dir):
         m = metas[i].item() if isinstance(metas[i], np.ndarray) else metas[i]
         subj = make_subject_from_paths(Path(m["ct"]))
 
+        auto_fov = bool(m.get("auto_fov", False))
+        delx = m.get("delx", float("nan"))
+        try:
+            import math
+            finite_delx = math.isfinite(float(delx))
+        except Exception:
+            finite_delx = False
         if dbg:
             coarse = render_drr(
                 subj,
                 yaw=float(m["yaw"]), pitch=float(m["pitch"]), roll=float(m["roll"]),
                 tx=float(m["tx"]), ty=float(m["ty"]), tz=float(m["tz"]),
-                sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev
+                sdd=m["sdd"], height=m["height"], delx=(float(delx) if finite_delx else 1.0), dev=dev,
+                auto_fov=auto_fov or not finite_delx,
             )
             # grayscale-safe write
             save_u8_gray(dbg / f"{len(list(dbg.glob('*.png'))):02d}_coarse_sim{float(sims[i]):.3f}.png", coarse)
 
-        drr = make_drr(subj, sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev)
+        # Build DRR for refinement; if bank used auto_fov, recompute delx.
+        if auto_fov or not finite_delx:
+            # lazy import to avoid circulars; compute auto delx same way as bank build
+            from ..core.drr_utils import _auto_delx_from_subject as _auto_delx
+            delx_ref = _auto_delx(subj, height=m["height"])  # consistent with current subject
+        else:
+            delx_ref = float(delx)
+        drr = make_drr(subj, sdd=m["sdd"], height=m["height"], delx=delx_ref, dev=dev)
 
         rot0 = torch.tensor([[m["yaw"], m["pitch"], m["roll"]]], device=dev, dtype=torch.float32)
         trs0 = torch.tensor([[m["tx"],  m["ty"],   m["tz"]  ]], device=dev, dtype=torch.float32)
@@ -77,26 +92,36 @@ def register(bank, frame, out, iters, topk, debug_dir):
                     subj,
                     yaw=float(rot_f[0,0].item()), pitch=float(rot_f[0,1].item()), roll=float(rot_f[0,2].item()),
                     tx=float(trs_f[0,0].item()), ty=float(trs_f[0,1].item()), tz=float(trs_f[0,2].item()),
-                    sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev
+                    sdd=m["sdd"], height=m["height"], delx=(float(delx) if finite_delx else 1.0), dev=dev,
+                    auto_fov=auto_fov or not finite_delx,
                 )
                 # refined
                 save_u8_gray(dbg / f"{len(list(dbg.glob('*.png'))):02d}_refined_loss{loss:.4f}.png", refined)
 
         if loss < best_loss:
             best_loss = loss
-            best_pack = (subj, Path(m["seg"]), rot_f.detach().clone(), trs_f.detach().clone(), m)
+            best_pack = (subj, Path(m["seg"]), rot_f.detach().clone(), trs_f.detach().clone(), m, delx_ref)
 
     if best_pack is None:
         raise click.ClickException("No candidate survived refinement.")
 
-    subj, seg_path, rot, trs, m = best_pack
+    subj, seg_path, rot, trs, m, best_delx = best_pack
 
     # save best refined DRR
+    # Re-render best with the same auto_fov handling
+    auto_fov = bool(m.get("auto_fov", False))
+    delx = m.get("delx", float("nan"))
+    try:
+        import math
+        finite_delx = math.isfinite(float(delx))
+    except Exception:
+        finite_delx = False
     best_refined = render_drr(
         subj,
         yaw=float(rot[0,0].item()), pitch=float(rot[0,1].item()), roll=float(rot[0,2].item()),
         tx=float(trs[0,0].item()), ty=float(trs[0,1].item()), tz=float(trs[0,2].item()),
-        sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev
+        sdd=m["sdd"], height=m["height"], delx=(float(delx) if finite_delx else 1.0), dev=dev,
+        auto_fov=auto_fov or not finite_delx,
     )
 
     if dbg:
@@ -114,12 +139,17 @@ def register(bank, frame, out, iters, topk, debug_dir):
         subject_ct=subj,
         seg_path=seg_path,
         rot=rot, trs=trs,
-        sdd=m["sdd"], height=m["height"], delx=m["delx"], dev=dev
+        sdd=m["sdd"], height=m["height"], delx=float(best_delx), dev=dev
     )
     outline = mask_to_outline(mask, k=3)
     overlay = overlay_mask_on_gray(qry_img, outline, alpha=0.9, color=(0,255,0))
     out = Path(out)
     cv2.imwrite(str(out), overlay)
+
+    # dump masks if debug dir is provided (helps manual comparison)
+    if dbg:
+        save_u8_gray(dbg / "95_projected_mask.png", mask)
+        save_u8_gray(dbg / "96_projected_outline.png", outline)
 
     pose_path = out.with_suffix(".pose.json")
     with open(pose_path, "w") as f:

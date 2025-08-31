@@ -66,7 +66,8 @@ def _parse_label_spec(spec: str, max_id: int):
 def build_bank(data_root, subset, limit_cases, views_per_case, height, sdd, delx, ty, auto_fov,
                out, masked, labels, min_voxels, debug_dir, unpack_dir, view_mode):
     dev = device()
-    pairs = find_pairs(data_root, subset, limit=limit_cases)
+    # Always fetch all pairs; we will cap with views later
+    pairs = find_pairs(data_root, subset, limit=0)
 
     dbg = Path(debug_dir) if debug_dir else None
     if dbg: dbg.mkdir(parents=True, exist_ok=True)
@@ -77,12 +78,20 @@ def build_bank(data_root, subset, limit_cases, views_per_case, height, sdd, delx
     index = 0
     import cv2
 
-    for idx_case, (vpath, lpath) in enumerate(pairs[:limit_cases], 1):
-        click.echo(f"[{idx_case}/{min(limit_cases, len(pairs))}] {vpath.name}")
+    sel_pairs = pairs if (limit_cases == 0) else pairs[:limit_cases]
+    total_cases = len(sel_pairs)
+    for idx_case, (vpath, lpath) in enumerate(sel_pairs, 1):
+        click.echo(f"[{idx_case}/{total_cases}] {vpath.name}")
         subj = make_subject_from_paths(vpath, lpath, mask_volume=masked)
+        has_seg = (lpath is not None) and ("labelmap" in subj)
+        if masked and not has_seg:
+            click.echo("   ⚠️  no segmentation found; using unmasked volume")
 
         # Optional label whitelist and sanity check
         if masked and labels:
+            if not has_seg:
+                click.echo("   ⚠️  labels filter requested but seg missing; skipping case")
+                continue
             lab = subj["labelmap"].data                   # torch tensor, shape (1, X, Y, Z)
             max_id = int(lab.max().item())
             keep_np = _parse_label_spec(labels, max_id)   # numpy bool array or None
