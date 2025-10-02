@@ -24,6 +24,21 @@ Each slab directory produced by `build-pseudo-lateral` contains:
 
 The reconstruction pipeline assumes at least `image.png`, `mask.png`, and `labels.json`. If `mask_labels.png` is present, the helper uses it unless you pass `--ignore-label-map`.
 
+## Output Layout
+
+Each angle directory now groups artefacts by type:
+
+```
+outputs/pseudo_lateral/angles/<rot_id>/images/<stem>.png
+outputs/pseudo_lateral/angles/<rot_id>/mask_labels/<stem>.png
+outputs/pseudo_lateral/angles/<rot_id>/mask/<stem>.png
+outputs/pseudo_lateral/angles/<rot_id>/labels-json/<stem>.json
+outputs/pseudo_lateral/angles/<rot_id>/overlays/<stem>.png
+outputs/pseudo_lateral/angles/<rot_id>/overlay_recolored/<stem>.png
+```
+
+The manifest at `angles/<rot_id>/manifest.csv` now contains only two columns (`image`, `mask_labels`) pointing to the files above. All other metadata lives in the per-sample JSON.
+
 ---
 
 ## Reconstruction Steps

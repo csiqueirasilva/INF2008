@@ -44,18 +44,13 @@ AUTO_CROP=${AUTO_CROP:-0}
 CROP_MARGIN_MM=${CROP_MARGIN_MM:-20}
 RESIZE_AFTER_CROP=${RESIZE_AFTER_CROP:-0}
 
-# Optional colour overlay regeneration
-COLORIZE=${COLORIZE:-1}
-COLORIZE_ALPHA=${COLORIZE_ALPHA:-0.45}
-COLORIZE_MASK_OUT=${COLORIZE_MASK_OUT:-1}
-
 # Pan (mm)
 PAN_X=0
 PAN_Y=0
 PAN_Z=0
 
 # Depth sampling
-SLAB_MM=12
+SLAB_MM=${SLAB_MM:-12}
 KEEP_MM=${KEEP_MM:-0} # was 12
 WINDOW_COUNT=${WINDOW_COUNT:-1} # was 30; 
 SLAB_COUNT=${SLAB_COUNT:-1}
@@ -189,15 +184,6 @@ for dp in "${P_SEQ[@]}"; do
         $([ "$OVERRIDE_EXISTING" -eq 1 ] && echo "--override-existing" || true) \
         --out-dir "$OUT_SUBDIR"
 
-      if [[ "$COLORIZE" -eq 1 ]]; then
-        find "$OUT_SUBDIR" -mindepth 1 -maxdepth 1 -type d | while read -r sample; do
-          mask_args=()
-          if [[ "$COLORIZE_MASK_OUT" -eq 1 ]]; then
-            mask_args+=(--mask-out "$sample/mask_color.png")
-          fi
-          "${SPINE_CMD[@]}" colorize-labels "$sample" --alpha "$COLORIZE_ALPHA" "${mask_args[@]}"
-        done
-      fi
     done
   done
 done

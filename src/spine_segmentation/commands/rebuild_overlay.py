@@ -27,45 +27,65 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
 
 
 @cli.command("rebuild-overlay")
-@click.argument("sample_dir", type=click.Path(path_type=Path, file_okay=False))
+@click.option("--image", type=click.Path(path_type=Path, dir_okay=False), required=True,
+              help="Path to the grayscale projection (image.png)")
+@click.option("--mask-labels", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Optional path to mask_labels.png (per-pixel label IDs)")
+@click.option("--mask", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Union mask (mask.png). Needed if mask_labels is not provided or ignored")
+@click.option("--labels-json", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Optional labels.json to source metadata (bbox/centroid) or fallback mask path")
 @click.option("--out-path", type=click.Path(path_type=Path), default=None,
-              help="Where to save the blended overlay (defaults to overlay_rebuilt.png inside the sample directory)")
+              help="Where to save the blended overlay (defaults to overlay_rebuilt.png alongside the image)")
 @click.option("--mask-out", type=click.Path(path_type=Path), default=None,
               help="Optional path to save the per-label colour mask")
 @click.option("--alpha", type=float, default=0.45, show_default=True,
               help="Blend factor for colour mask vs grayscale image")
 @click.option("--ignore-label-map/--use-label-map", default=False, show_default=True,
               help="Force JSON-based reconstruction even if mask_labels.png exists")
-def rebuild_overlay(sample_dir: Path, out_path: Path | None, mask_out: Path | None, alpha: float, ignore_label_map: bool) -> None:
+def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, labels_json: Path | None, out_path: Path | None,
+                    mask_out: Path | None, alpha: float, ignore_label_map: bool) -> None:
     """Reconstruct a colour overlay using only image.png, mask.png, and labels.json."""
 
-    sample_dir = sample_dir.resolve()
-    img_path = sample_dir / "image.png"
-    mask_path = sample_dir / "mask.png"
-    labels_path = sample_dir / "labels.json"
+    img_path = Path(image).expanduser().resolve()
+    mask_labels_path = Path(mask_labels).expanduser().resolve() if mask_labels else None
+    mask_path = Path(mask).expanduser().resolve() if mask else None
+    labels_meta: Dict[str, Dict[str, object]] = {}
 
-    if not img_path.exists() or not mask_path.exists() or not labels_path.exists():
-        raise click.ClickException("Sample directory must contain image.png, mask.png, and labels.json")
+    def _resolve_meta_path(val: str | None) -> Path | None:
+        if not val:
+            return None
+        p = Path(val)
+        if not p.is_absolute():
+            p = (Path.cwd() / p).expanduser()
+        return p
+
+    if labels_json:
+        labels_json_path = Path(labels_json).expanduser().resolve()
+        import json
+        with open(labels_json_path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        labels_meta = meta.get("labels", {})
+        if mask_labels_path is None and not ignore_label_map:
+            mask_labels_path = _resolve_meta_path(meta.get("mask_labels"))
+        if mask_path is None:
+            mask_path = _resolve_meta_path(meta.get("mask"))
+    else:
+        labels_json_path = None
 
     img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise click.ClickException(f"Failed to read {img_path}")
 
-    import json
-    with open(labels_path, "r", encoding="utf-8") as fh:
-        meta = json.load(fh)
-    labels_meta: Dict[str, Dict[str, object]] = meta.get("labels", {})
-
     h, w = img.shape
-    label_map_path = sample_dir / "mask_labels.png"
-    use_label_map = (not ignore_label_map) and label_map_path.exists()
+    use_label_map = (not ignore_label_map) and mask_labels_path is not None
 
     if use_label_map:
-        label_map = cv2.imread(str(label_map_path), cv2.IMREAD_UNCHANGED)
+        label_map = cv2.imread(str(mask_labels_path), cv2.IMREAD_UNCHANGED)
         if label_map is None:
-            raise click.ClickException(f"Failed to read {label_map_path}")
+            raise click.ClickException(f"Failed to read {mask_labels_path}")
         if label_map.shape[:2] != (h, w):
-            raise click.ClickException("mask_labels.png shape does not match image.png")
+            raise click.ClickException("mask_labels.png shape does not match image")
         if label_map.dtype != np.uint8:
             label_map = label_map.astype(np.uint8)
         color_mask = np.zeros((h, w, 3), dtype=np.uint8)
@@ -73,10 +93,15 @@ def rebuild_overlay(sample_dir: Path, out_path: Path | None, mask_out: Path | No
         for lid in unique:
             color_mask[label_map == lid] = label_to_color(lid)
     else:
+        if mask_path is None:
+            raise click.ClickException("Union mask is required when mask_labels is absent or ignored. Provide --mask or a labels.json containing 'mask'.")
         union = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if union is None:
             raise click.ClickException(f"Failed to read {mask_path}")
         union_bool = union > 0
+
+        if not labels_meta:
+            raise click.ClickException("labels.json with per-label metadata is required for fallback reconstruction")
 
         label_map = np.zeros((h, w), dtype=np.uint8)
         assigned = np.zeros((h, w), dtype=bool)
@@ -130,15 +155,15 @@ def rebuild_overlay(sample_dir: Path, out_path: Path | None, mask_out: Path | No
             color_mask[label_map == lid] = label_to_color(lid)
 
     if mask_out is not None:
-        mask_out = Path(mask_out).resolve()
+        mask_out = Path(mask_out).expanduser().resolve()
         mask_out.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(mask_out), color_mask):
             raise click.ClickException(f"Failed to write colour mask to {mask_out}")
 
     if out_path is None:
-        out_path = sample_dir / "overlay_rebuilt.png"
+        out_path = img_path.with_name("overlay_rebuilt.png")
     else:
-        out_path = Path(out_path).resolve()
+        out_path = Path(out_path).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
     alpha = float(np.clip(alpha, 0.0, 1.0))

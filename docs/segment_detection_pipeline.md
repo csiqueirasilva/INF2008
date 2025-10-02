@@ -4,12 +4,13 @@ This document outlines the planned workflow for detecting vertebral segments in 
 
 ## Data Representation
 
-Each projected slab directory contains:
+- Input: `outputs/pseudo_lateral/angles/<rot_id>/images/<stem>.png`
+- Target: `outputs/pseudo_lateral/angles/<rot_id>/mask_labels/<stem>.png`
+- Optional diagnostics: union mask, overlays, and `labels-json/<stem>.json`.
 
-- `image.png` – grayscale pseudo-lateral view (uint8).
-- `mask_labels.png` – multi-class label map (uint8) where each pixel stores the vertebra ID (0 = background, 1–7 for C1–C7).
-- `mask.png` – union mask (any label > 0), provided mainly for reference.
-- `labels.json` – metadata (centroids, bounding boxes, statistics) for each label; useful for QA but not required for the neural net.
+## Dataset Layout
+
+Training pairs live in the angle-specific folders created during generation, e.g. `outputs/pseudo_lateral/angles/<rot_id>/images/<stem>.png` alongside the matching `mask_labels/<stem>.png`. The two columns in `manifest.csv` point to those files directly.
 
 ## Training Pipeline
 

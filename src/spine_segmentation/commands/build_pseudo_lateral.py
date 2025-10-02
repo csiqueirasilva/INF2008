@@ -348,6 +348,16 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
         click.echo(f"🧹 Cleared directory: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+
+    images_dir = out_dir / "images"
+    masks_dir = out_dir / "mask"
+    mask_labels_dir = out_dir / "mask_labels"
+    overlays_dir = out_dir / "overlays"
+    overlay_recolored_dir = out_dir / "overlay_recolored"
+    labels_dir = out_dir / "labels-json"
+    for d in (images_dir, masks_dir, mask_labels_dir, overlays_dir, overlay_recolored_dir, labels_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
     manifest_rows = []  # kept for backward compatibility (we also stream rows)
     # Prepare streaming manifest writer
     mf = out_dir / "manifest.csv"
@@ -622,17 +632,27 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
                     # Keep robust; do not fail generation if helper drawing had an issue
                     click.echo(f"      (axis-helper error: {e})")
 
-            # save to per-sample folder
-            sample_dir = out_dir / stem
-            sample_dir.mkdir(parents=True, exist_ok=True)
-            out_img = sample_dir / "image.png"
-            out_msk = sample_dir / "mask.png"
-            out_lbl = sample_dir / "mask_labels.png"
-            out_ovr = sample_dir / "overlay.png"
+            # write artefacts into structured directories
+            out_img = images_dir / f"{stem}.png"
+            out_msk = masks_dir / f"{stem}.png"
+            out_lbl = mask_labels_dir / f"{stem}.png"
+            out_ovr = overlays_dir / f"{stem}.png"
+            out_lbljson = labels_dir / f"{stem}.json"
+            out_recolored = overlay_recolored_dir / f"{stem}.png"
+
             cv2.imwrite(str(out_img), _ensure_gray_u8(img))
             cv2.imwrite(str(out_msk), _ensure_gray_u8(union))
             cv2.imwrite(str(out_lbl), label_map)
             cv2.imwrite(str(out_ovr), overlay)
+
+            color_mask = np.zeros((*img.shape, 3), dtype=np.uint8)
+            for lid, m in masks2d.items():
+                if m.max() == 0:
+                    continue
+                color_mask[m.astype(bool)] = colors.get(int(lid), (255, 255, 255))
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            overlay_recolored = cv2.addWeighted(color_mask, 0.45, img_rgb, 0.55, 0.0)
+            cv2.imwrite(str(out_recolored), overlay_recolored)
 
             # stats JSON with mm metrics
             stats = {}
@@ -660,7 +680,7 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
                     "area_mm2": area_mm2,
                 }
 
-            with open(sample_dir / "labels.json", "w") as f:
+            with open(out_lbljson, "w") as f:
                 json.dump({
                     "case": ct.stem,
                     "subset": subset,
@@ -668,6 +688,7 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
                     "mask": str(out_msk),
                     "mask_labels": str(out_lbl),
                     "overlay": str(out_ovr),
+                    "overlay_recolored": str(out_recolored),
                     "labels": stats,
                     "plane": plane,
                     "rot90": int(k),
@@ -697,17 +718,13 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
             # Stream manifest row immediately
             manifest_rows.append(row)
             if write_manifest:
-                # initialize header on first row (when lids are known)
                 if not manifest_inited:
-                    headers_full = headers + sum([[f"present_{lid}", f"area_mm2_{lid}"] for lid in lids], [])
                     with open(mf, "w", newline="") as f:
-                        w = csv.DictWriter(f, fieldnames=headers_full)
+                        w = csv.DictWriter(f, fieldnames=headers)
                         w.writeheader()
                     manifest_inited = True
-                # append row
-                headers_full = headers + sum([[f"present_{lid}", f"area_mm2_{lid}"] for lid in lids], [])
                 with open(mf, "a", newline="") as f:
-                    w = csv.DictWriter(f, fieldnames=headers_full)
+                    w = csv.DictWriter(f, fieldnames=headers)
                     w.writerow(row)
                     f.flush()
 
