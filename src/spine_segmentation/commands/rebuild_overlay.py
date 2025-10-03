@@ -26,52 +26,42 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
     return labels == max_idx
 
 
-@cli.command("rebuild-overlay")
-@click.option("--image", type=click.Path(path_type=Path, dir_okay=False), required=True,
-              help="Path to the grayscale projection (image.png)")
-@click.option("--mask-labels", type=click.Path(path_type=Path, dir_okay=False), default=None,
-              help="Optional path to mask_labels.png (per-pixel label IDs)")
-@click.option("--mask", type=click.Path(path_type=Path, dir_okay=False), default=None,
-              help="Union mask (mask.png). Needed if mask_labels is not provided or ignored")
-@click.option("--labels-json", type=click.Path(path_type=Path, dir_okay=False), default=None,
-              help="Optional labels.json to source metadata (bbox/centroid) or fallback mask path")
-@click.option("--out-path", type=click.Path(path_type=Path), default=None,
-              help="Where to save the blended overlay (defaults to overlay_rebuilt.png alongside the image)")
-@click.option("--mask-out", type=click.Path(path_type=Path), default=None,
-              help="Optional path to save the per-label colour mask")
-@click.option("--alpha", type=float, default=0.45, show_default=True,
-              help="Blend factor for colour mask vs grayscale image")
-@click.option("--ignore-label-map/--use-label-map", default=False, show_default=True,
-              help="Force JSON-based reconstruction even if mask_labels.png exists")
-def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, labels_json: Path | None, out_path: Path | None,
-                    mask_out: Path | None, alpha: float, ignore_label_map: bool) -> None:
-    """Reconstruct a colour overlay using only image.png, mask.png, and labels.json."""
+def _resolve_optional_path(val: Path | str | None) -> Path | None:
+    if not val:
+        return None
+    path = Path(val).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    return path
+
+
+def generate_overlay(
+    image: Path,
+    mask_labels: Path | None,
+    mask: Path | None,
+    labels_json: Path | None,
+    alpha: float,
+    ignore_label_map: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (overlay_bgr, colour_mask) using the same rules as the CLI command."""
 
     img_path = Path(image).expanduser().resolve()
-    mask_labels_path = Path(mask_labels).expanduser().resolve() if mask_labels else None
-    mask_path = Path(mask).expanduser().resolve() if mask else None
+    mask_labels_path = _resolve_optional_path(mask_labels)
+    mask_path = _resolve_optional_path(mask)
+    labels_json_path = _resolve_optional_path(labels_json)
+
     labels_meta: Dict[str, Dict[str, object]] = {}
 
-    def _resolve_meta_path(val: str | None) -> Path | None:
-        if not val:
-            return None
-        p = Path(val)
-        if not p.is_absolute():
-            p = (Path.cwd() / p).expanduser()
-        return p
-
-    if labels_json:
-        labels_json_path = Path(labels_json).expanduser().resolve()
+    if labels_json_path is not None:
         import json
+
         with open(labels_json_path, "r", encoding="utf-8") as fh:
             meta = json.load(fh)
         labels_meta = meta.get("labels", {})
         if mask_labels_path is None and not ignore_label_map:
-            mask_labels_path = _resolve_meta_path(meta.get("mask_labels"))
+            mask_labels_path = _resolve_optional_path(meta.get("mask_labels"))
         if mask_path is None:
-            mask_path = _resolve_meta_path(meta.get("mask"))
-    else:
-        labels_json_path = None
+            mask_path = _resolve_optional_path(meta.get("mask"))
 
     img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -94,14 +84,18 @@ def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, la
             color_mask[label_map == lid] = label_to_color(lid)
     else:
         if mask_path is None:
-            raise click.ClickException("Union mask is required when mask_labels is absent or ignored. Provide --mask or a labels.json containing 'mask'.")
+            raise click.ClickException(
+                "Union mask is required when mask_labels is absent or ignored. Provide --mask or a labels.json containing 'mask'."
+            )
         union = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if union is None:
             raise click.ClickException(f"Failed to read {mask_path}")
         union_bool = union > 0
 
         if not labels_meta:
-            raise click.ClickException("labels.json with per-label metadata is required for fallback reconstruction")
+            raise click.ClickException(
+                "labels.json with per-label metadata is required for fallback reconstruction"
+            )
 
         label_map = np.zeros((h, w), dtype=np.uint8)
         assigned = np.zeros((h, w), dtype=bool)
@@ -154,21 +148,53 @@ def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, la
         for lid in unique:
             color_mask[label_map == lid] = label_to_color(lid)
 
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    overlay = cv2.addWeighted(color_mask, alpha, img_rgb, 1.0 - alpha, 0.0)
+
+    return overlay, color_mask
+
+
+@cli.command("rebuild-overlay")
+@click.option("--image", type=click.Path(path_type=Path, dir_okay=False), required=True,
+              help="Path to the grayscale projection (image.png)")
+@click.option("--mask-labels", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Optional path to mask_labels.png (per-pixel label IDs)")
+@click.option("--mask", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Union mask (mask.png). Needed if mask_labels is not provided or ignored")
+@click.option("--labels-json", type=click.Path(path_type=Path, dir_okay=False), default=None,
+              help="Optional labels.json to source metadata (bbox/centroid) or fallback mask path")
+@click.option("--out-path", type=click.Path(path_type=Path), default=None,
+              help="Where to save the blended overlay (defaults to overlay_rebuilt.png alongside the image)")
+@click.option("--mask-out", type=click.Path(path_type=Path), default=None,
+              help="Optional path to save the per-label colour mask")
+@click.option("--alpha", type=float, default=0.45, show_default=True,
+              help="Blend factor for colour mask vs grayscale image")
+@click.option("--ignore-label-map/--use-label-map", default=False, show_default=True,
+              help="Force JSON-based reconstruction even if mask_labels.png exists")
+def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, labels_json: Path | None, out_path: Path | None,
+                    mask_out: Path | None, alpha: float, ignore_label_map: bool) -> None:
+    """Reconstruct a colour overlay using only image.png, mask.png, and labels.json."""
+
+    image_path = Path(image).expanduser().resolve()
+
+    overlay, color_mask = generate_overlay(
+        image=image,
+        mask_labels=mask_labels,
+        mask=mask,
+        labels_json=labels_json,
+        alpha=alpha,
+        ignore_label_map=ignore_label_map,
+    )
+
+    out_path = Path(out_path).expanduser().resolve() if out_path else image_path.with_name("overlay_rebuilt.png")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     if mask_out is not None:
         mask_out = Path(mask_out).expanduser().resolve()
         mask_out.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(mask_out), color_mask):
             raise click.ClickException(f"Failed to write colour mask to {mask_out}")
-
-    if out_path is None:
-        out_path = img_path.with_name("overlay_rebuilt.png")
-    else:
-        out_path = Path(out_path).expanduser().resolve()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    alpha = float(np.clip(alpha, 0.0, 1.0))
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    overlay = cv2.addWeighted(color_mask, alpha, img_rgb, 1.0 - alpha, 0.0)
 
     if not cv2.imwrite(str(out_path), overlay):
         raise click.ClickException(f"Failed to write overlay to {out_path}")

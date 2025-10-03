@@ -40,3 +40,9 @@ logs/
 
 # output
 outputs
+
+# prepared data
+prepared
+
+# output from inference executions
+runs

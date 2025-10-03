@@ -82,3 +82,6 @@ Use the generated folders to visually inspect slabs (`angles/<rot_id>/images`), 
 ```bash
 KEEP_MM=60 WINDOW_COUNT=50 SLAB_MM=12 bash scripts/build_pseudo_dataset.sh   --data-root data/CTSpine1K   --out-dir outputs/pseudo_lateral   --limit-cases 50   --override-existing --clear-dir --axis-helper --roll-sweep "0:0:0" --pitch-sweep "0:0:0" --yaw-sweep "0:0:0"
 ```
+## Preparing centred tiles
+
+Use `spine prepare-unet-tiles` to crop circular 384×384 tiles (centred on C4 by default). The command reads any angle manifest and writes a new slim manifest under the output directory.
