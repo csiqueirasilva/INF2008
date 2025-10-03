@@ -285,6 +285,8 @@ def _shift_volume(arr: np.ndarray, pan_x_mm: float|None, pan_y_mm: float|None, p
 @click.option("--limit-cases", type=int, default=0, show_default=True, help="0 = all")
 @click.option("--labels", default="1-7", show_default=True, help="Label IDs to include (e.g., '1-7')")
 @click.option("--height", type=int, default=512, show_default=True)
+@click.option("--native-resolution/--no-native-resolution", default=False, show_default=True,
+              help="Keep the CT's native in-plane resolution (ignores --height and disables post-resize)")
 @click.option("--plane", type=click.Choice(["sag","cor","ax"], case_sensitive=False), default="sag", show_default=True)
 @click.option("--rot90", type=int, default=0, show_default=True, help="Rotate output by k*90 degrees (0..3)")
 @click.option("--ct-window-lo", type=float, default=-1000.0, show_default=True,
@@ -324,21 +326,25 @@ def _shift_volume(arr: np.ndarray, pan_x_mm: float|None, pan_y_mm: float|None, p
 @click.option("--pan-z-mm", type=float, default=0.0, show_default=True, help="Translate along Z (mm) before projection")
 @click.option("--override-existing/--no-override-existing", default=False, show_default=True,
               help="Skip recomputing samples if the per-sample folder already exists with all outputs")
-def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, rot90,
+def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, native_resolution, plane, rot90,
                          ct_window_lo, ct_window_hi, projection_power, tone_style,
                          auto_crop, crop_margin_mm, resize_after_crop,
                          flip_h, flip_v, aperture, axis_helper,
                          yaw, pitch, roll, slab_vox, slab_mm, slab_count, slab_step_vox, slab_step_mm, out_dir, write_manifest, clear_dir, keep_slabs, keep_mm, window_count, pan_x_mm, pan_y_mm, pan_z_mm, override_existing):
-    """
-    Generate lateral-like pseudo X-ray images directly from CT by projecting along X (sagittal MIP-like),
-    optionally add C-arm aperture plus fluoroscopy tone, and write aligned 2D masks for chosen labels (default C1..C7).
-    """
+    """Deprecated entry point retained for CLI compatibility."""
+
+    raise click.ClickException(
+        "'build-pseudo-lateral' is deprecated and no longer maintained. "
+        "Please switch to 'spine build-hf-projection'."
+    )
     tone_style = tone_style.lower()
     if ct_window_hi <= ct_window_lo:
         raise click.ClickException("--ct-window-hi must be greater than --ct-window-lo")
     proj_power = float(projection_power)
     if proj_power <= 0:
         raise click.ClickException("--projection-power must be > 0")
+    if not native_resolution and height <= 0:
+        raise click.ClickException("--height must be > 0 unless --native-resolution is enabled")
 
     out_dir = Path(out_dir)
     # New structure: one folder per generated image (sample)
@@ -512,10 +518,16 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
             # Project CT slab
             base = proj_slab_sum(ct_den, i0, i1)
             h0, w0 = base.shape[:2]
-            new_h = int(height)
-            scale = new_h / float(max(h0, 1))
-            new_w = int(max(1, round(w0 * scale)))
-            base = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            if native_resolution:
+                new_h = h0
+                new_w = w0
+                scale = 1.0
+            else:
+                new_h = int(height)
+                scale = new_h / float(max(h0, 1))
+                new_w = int(max(1, round(w0 * scale)))
+                if new_h != h0 or new_w != w0:
+                    base = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
             if tone_style == "fluoro":
                 # Fluoroscopy-style tone via random gamma, blur, and sensor noise
@@ -594,7 +606,8 @@ def build_pseudo_lateral(data_root, subset, limit_cases, labels, height, plane, 
                         crop_h_raw, crop_w_raw = crop_h, crop_w
                         did_crop = True
 
-            if resize_after_crop and did_crop and new_h > 0 and img.shape[0] != new_h:
+            allow_post_resize = resize_after_crop and (not native_resolution)
+            if allow_post_resize and did_crop and new_h > 0 and img.shape[0] != new_h:
                 scale_post = new_h / float(max(img.shape[0], 1))
                 new_w_post = int(max(1, round(img.shape[1] * scale_post)))
                 img = cv2.resize(img, (new_w_post, new_h), interpolation=cv2.INTER_AREA)

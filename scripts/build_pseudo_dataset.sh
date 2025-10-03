@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build pseudo‑lateral dataset for a single subset (HNSCC-3DCT-RT),
-# generating multiple angles via small yaw/pitch/roll sweeps.
-# Also increases slab sampling to 30 within the same ±keep-mm window.
+# Deprecated helper: build-pseudo-lateral is no longer maintained. This script
+# remains only to notify users to switch to build-hf-projection.
+
+echo "[build_pseudo_dataset.sh] This script has been deprecated because 'spine build-pseudo-lateral' is no longer supported." >&2
+echo "Please migrate to 'spine build-hf-projection' for projection generation." >&2
+exit 1
 
 # Locate CLI entry point (allows overriding via SPINE_BIN env).
 if [[ -n "${SPINE_BIN:-}" ]]; then

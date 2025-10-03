@@ -45,6 +45,8 @@ You should see a `🔎 Detected labels -> ...` line listing C1–C7 with small b
 
 When you want to sweep through an entire folder (for example, `data/frames/50`), use the batch command. It loads the model once, iterates over all files matching the glob pattern, and optionally writes a CSV summary.
 
+> Looking for more realistic training projections? See `docs/deepdrr_integration.md` for the DeepDRR-inspired renderer that generates fluoroscopy-like inputs before UNet training.
+
 ```bash
 poetry run spine predict-unet-batch \
   --model runs/unet_exp01/unet_best.pt \
@@ -77,7 +79,7 @@ All paths accept `~` expansion and will be created as needed (for example, the p
 
 ## Inspecting Results
 
-- Use any image viewer to inspect `--overlay-out`. The legend and colour scheme match the pseudo-lateral dataset.
+- Use any image viewer to inspect `--overlay-out`. The legend and colour scheme match the high-fidelity projection dataset produced by `build-hf-projection`.
 - Review the CLI summary (`🔎 Detected labels -> ...`) to confirm that vertebrae were found and to gauge their relative area.
 - Try `--clahe` on low-contrast images; the equalisation often helps when moving from CT-style tiles to camera captures. When CLAHE is enabled, the preprocessed grayscale is also saved alongside the overlay (`*_clahe.png`).
 - The UNet predicts each class independently via argmax of the logits, so single classes can appear without their neighbours if the network is confident; the batch report highlights such sparsely detected labels.
@@ -88,7 +90,7 @@ All paths accept `~` expansion and will be created as needed (for example, the p
 
 - **Shape mismatch** – Ensure the inference image has the same height/width as the training tiles; U-Net requires dimensions divisible by 16.
 - **Missing file** – Confirm the path passed to `--image` exists (e.g. `data/frames/50/v50_f100.png` in this repository) and is readable.
-- **No detections** – Verify the sanity-check command above works; if it does, the issue is likely a domain gap between your target image and the pseudo-lateral training data.
+- **No detections** – Verify the sanity-check command above works; if it does, the issue is likely a domain gap between your target image and the high-fidelity training data.
 - **Batch sweep empty** – Inspect the CSV (if generated) to confirm foreground pixels are truly absent; otherwise revisit preprocessing (try `--clahe`) or consider fine-tuning on frames closer to the target domain.
 - **CUDA missing** – Supply `--device cpu` if you run on hardware without CUDA drivers.
 - **Palette differences** – Colours come from `label_colors.py`. If you modify that mapping, both training overlays and inference previews stay in sync automatically.

@@ -2,7 +2,10 @@
 
 This note describes how we can regenerate coloured overlays for pseudo‑lateral CT slabs in two formats:
 
-1. **From generator artefacts** – when `build-pseudo-lateral` has already written `mask_labels.png` (the multi-class ID map) alongside `image.png` and `mask.png`.
+> ⚠️ `build-pseudo-lateral` has been deprecated. Use `build-hf-projection`
+> outputs in place of the pseudo-lateral artefacts described below.
+
+1. **From generator artefacts** – when the projection stage has already written `mask_labels.png` (the multi-class ID map) alongside `image.png` and `mask.png`.
 2. **From raw metadata only** – when only `image.png`, `mask.png`, and `labels.json` are available (e.g., model predictions for unseen data).
 
 The second route is what the new `spine rebuild-overlay` command implements, and is the core we’ll reuse after a model produces its own labels.
@@ -11,7 +14,7 @@ The second route is what the new `spine rebuild-overlay` command implements, and
 
 ## Inputs
 
-Each slab directory produced by `build-pseudo-lateral` contains:
+Each projection directory (whether produced by `build-hf-projection` or legacy pseudo-lateral code) contains:
 
 - `image.png` – grayscale projection (uint8).
 - `mask.png` – union mask (white wherever any label is present).

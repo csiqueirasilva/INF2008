@@ -1,16 +1,20 @@
 # Segment Detection Pipeline (UNet-Based)
 
+> ⚠️ This draft targeted the legacy pseudo-lateral dataset. Replace the paths
+> below with the outputs from `spine build-hf-projection` when following the
+> current workflow.
+
 This document outlines the planned workflow for detecting vertebral segments in pseudo-lateral projections using a UNet-style network.
 
 ## Data Representation
 
-- Input: `outputs/pseudo_lateral/angles/<rot_id>/images/<stem>.png`
-- Target: `outputs/pseudo_lateral/angles/<rot_id>/mask_labels/<stem>.png`
+- Input: `outputs/high_fidelity/images/<stem>.png`
+- Target: `outputs/high_fidelity/mask_labels/<stem>.png`
 - Optional diagnostics: union mask, overlays, and `labels-json/<stem>.json`.
 
 ## Dataset Layout
 
-Training pairs live in the angle-specific folders created during generation, e.g. `outputs/pseudo_lateral/angles/<rot_id>/images/<stem>.png` alongside the matching `mask_labels/<stem>.png`. The two columns in `manifest.csv` point to those files directly.
+Training pairs live in the projection folder created during generation, e.g. `outputs/high_fidelity/images/<stem>.png` alongside the matching `mask_labels/<stem>.png`. The two columns in `manifest.csv` point to those files directly.
 
 ## Training Pipeline
 

@@ -64,8 +64,14 @@ def _recolor(mask_labels: np.ndarray) -> np.ndarray:
 
 
 @cli.command("prepare-unet-tiles")
-@click.option("--csv", "csv_path", type=click.Path(path_type=Path), required=True,
+@click.option("--csv", "csv_path", type=click.Path(path_type=Path), required=False,
               help="Manifest produced by build_pseudo_dataset.sh")
+@click.option("--image", "images", type=click.Path(path_type=Path), multiple=True,
+              help="Direct path(s) to projection image(s) (bypasses CSV)")
+@click.option("--mask", "masks", type=click.Path(path_type=Path), multiple=True,
+              help="Matching mask_label image(s) for --image")
+@click.option("--annotation", "annotations", type=click.Path(path_type=Path), multiple=True,
+              help="Optional labels.json path(s); derived automatically when omitted")
 @click.option("--out-dir", type=click.Path(path_type=Path), required=True,
               help="Directory where 384x384 tiles will be stored")
 @click.option("--size", type=int, default=384, show_default=True,
@@ -74,17 +80,45 @@ def _recolor(mask_labels: np.ndarray) -> np.ndarray:
               help="Label ID whose centroid anchors the crop; if omitted, use average of available labels")
 @click.option("--radius", type=int, default=192, show_default=True,
               help="Radius (pixels) for circular mask (defaults to size/2)")
+@click.option("--zoom", type=float, default=1.0, show_default=True,
+              help="Zoom factor (>1 crops tighter around the centroid before resizing back to output size)")
 @click.option("--write-overlay/--no-write-overlay", default=True, show_default=True,
               help="Optionally write recoloured overlay for QA")
-def prepare_unet_tiles(csv_path: Path, out_dir: Path, size: int, label_id: int,
-                       radius: int, write_overlay: bool) -> None:
+def prepare_unet_tiles(csv_path: Path | None, images: tuple[Path, ...], masks: tuple[Path, ...],
+                       annotations: tuple[Path, ...], out_dir: Path, size: int, label_id: int,
+                       radius: int, zoom: float, write_overlay: bool) -> None:
     """Crop 384x384 tiles centred on a vertebra centroid and apply circular vignette."""
 
-    csv_path = csv_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    df = _load_manifest(csv_path)
+    entries: list[tuple[Path, Path, Path]] = []
+
+    if csv_path is not None:
+        csv_path = csv_path.expanduser().resolve()
+        df = _load_manifest(csv_path)
+        for image_path_str, mask_path_str in zip(df["image"], df["mask_labels"]):
+            image_path = Path(image_path_str).expanduser().resolve()
+            mask_path = Path(mask_path_str).expanduser().resolve()
+            json_path = _derive_json_path(image_path)
+            entries.append((image_path, mask_path, json_path))
+
+    if images or masks or annotations:
+        if len(images) != len(masks):
+            raise click.ClickException("--image and --mask must be provided the same number of times")
+        if annotations and len(annotations) not in (0, len(images)):
+            raise click.ClickException("--annotation count must match --image when supplied")
+        for idx, (img_path_raw, mask_path_raw) in enumerate(zip(images, masks)):
+            image_path = img_path_raw.expanduser().resolve()
+            mask_path = mask_path_raw.expanduser().resolve()
+            if annotations:
+                json_path = annotations[idx].expanduser().resolve()
+            else:
+                json_path = _derive_json_path(image_path)
+            entries.append((image_path, mask_path, json_path))
+
+    if not entries:
+        raise click.ClickException("Provide either --csv or at least one --image/--mask pair")
 
     images_dir = out_dir / "images"
     masks_dir = out_dir / "mask_labels"
@@ -95,10 +129,7 @@ def prepare_unet_tiles(csv_path: Path, out_dir: Path, size: int, label_id: int,
     records: List[dict] = []
     skipped = 0
 
-    for image_path_str, mask_path_str in zip(df["image"], df["mask_labels"]):
-        image_path = Path(image_path_str).expanduser().resolve()
-        mask_path = Path(mask_path_str).expanduser().resolve()
-        json_path = _derive_json_path(image_path)
+    for image_path, mask_path, json_path in entries:
 
         if not image_path.exists() or not mask_path.exists() or not json_path.exists():
             click.echo(f"⚠️ Skipping {image_path} (missing files)")
@@ -137,8 +168,16 @@ def prepare_unet_tiles(csv_path: Path, out_dir: Path, size: int, label_id: int,
             skipped += 1
             continue
 
-        tile_img = _crop_center(img, (centroid[0], centroid[1]), size)
-        tile_mask = _crop_center(mask_labels, (centroid[0], centroid[1]), size)
+        crop_size = size
+        if zoom > 1.0:
+            crop_size = max(8, int(round(size / zoom)))
+
+        tile_img = _crop_center(img, (centroid[0], centroid[1]), crop_size)
+        tile_mask = _crop_center(mask_labels, (centroid[0], centroid[1]), crop_size)
+
+        if crop_size != size:
+            tile_img = cv2.resize(tile_img, (size, size), interpolation=cv2.INTER_LINEAR)
+            tile_mask = cv2.resize(tile_mask, (size, size), interpolation=cv2.INTER_NEAREST)
 
         effective_radius = radius if radius > 0 else size // 2
         tile_img = _apply_circular_mask(tile_img, effective_radius)

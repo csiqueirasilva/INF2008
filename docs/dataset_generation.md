@@ -1,4 +1,8 @@
-# Pseudo-Lateral Dataset Generation
+# Pseudo-Lateral Dataset Generation (Deprecated)
+
+> ⚠️ `spine build-pseudo-lateral` is no longer maintained and has been removed
+> from production workflows. Use `spine build-hf-projection` to generate
+> training projections. The notes below remain for historical reference only.
 
 `build_pseudo_dataset.sh` is a thin wrapper around `spine build-pseudo-lateral`. It sweeps yaw/pitch/roll angles, renders pseudo-lateral projections, and writes each slab into the structured layout under `outputs/pseudo_lateral/angles/<rot_id>/...`.
 
