@@ -10,6 +10,17 @@ import numpy as np
 from .root import cli
 from ..core.label_colors import label_to_color
 
+# Bitmask label IDs for vertebrae (power-of-two encoding)
+BIT_LABEL_NAMES = {
+    1: "C1",
+    2: "C2",
+    4: "C3",
+    8: "C4",
+    16: "C5",
+    32: "C6",
+    64: "C7",
+}
+
 
 def _largest_component(mask: np.ndarray) -> np.ndarray:
     """Return boolean mask containing the largest connected component."""
@@ -42,6 +53,7 @@ def generate_overlay(
     labels_json: Path | None,
     alpha: float,
     ignore_label_map: bool,
+    legend: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return (overlay_bgr, colour_mask) using the same rules as the CLI command."""
 
@@ -152,6 +164,24 @@ def generate_overlay(
     img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     overlay = cv2.addWeighted(color_mask, alpha, img_rgb, 1.0 - alpha, 0.0)
 
+    if legend:
+        unique = [int(v) for v in np.unique(label_map) if v > 0]
+        if unique:
+            legend_overlay = overlay.copy()
+            x0, y0 = 10, h - 10
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.4
+            thickness = 1
+            line_h = 14
+            for idx, lid in enumerate(sorted(unique)):
+                y = y0 - idx * line_h
+                col = label_to_color(lid)
+                color = (int(col[0]), int(col[1]), int(col[2]))
+                name = BIT_LABEL_NAMES.get(lid, f"id{lid}")
+                cv2.rectangle(legend_overlay, (x0, y - 10), (x0 + 10, y), color, -1)
+                cv2.putText(legend_overlay, name, (x0 + 16, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            overlay = cv2.addWeighted(overlay, 0.7, legend_overlay, 0.3, 0.0)
+
     return overlay, color_mask
 
 
@@ -172,8 +202,10 @@ def generate_overlay(
               help="Blend factor for colour mask vs grayscale image")
 @click.option("--ignore-label-map/--use-label-map", default=False, show_default=True,
               help="Force JSON-based reconstruction even if mask_labels.png exists")
+@click.option("--legend/--no-legend", default=False, show_default=True,
+              help="Draw a label legend on the overlay")
 def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, labels_json: Path | None, out_path: Path | None,
-                    mask_out: Path | None, alpha: float, ignore_label_map: bool) -> None:
+                    mask_out: Path | None, alpha: float, ignore_label_map: bool, legend: bool) -> None:
     """Reconstruct a colour overlay using only image.png, mask.png, and labels.json."""
 
     image_path = Path(image).expanduser().resolve()
@@ -185,6 +217,7 @@ def rebuild_overlay(image: Path, mask_labels: Path | None, mask: Path | None, la
         labels_json=labels_json,
         alpha=alpha,
         ignore_label_map=ignore_label_map,
+        legend=legend,
     )
 
     out_path = Path(out_path).expanduser().resolve() if out_path else image_path.with_name("overlay_rebuilt.png")

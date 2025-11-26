@@ -46,3 +46,6 @@ prepared
 
 # output from inference executions
 runs
+
+# yolo
+yolo*.pt

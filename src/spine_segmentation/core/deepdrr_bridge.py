@@ -139,6 +139,9 @@ def render_deepdrr_projection(
     spectrum: str = "90KV_AL40",
     tone_style: str = "smooth",
     apply_clahe: bool = False,
+    bone_scale: float = 1.0,
+    slice_offset_mm: float = 0.0,
+    slice_thickness_mm: float = 0.0,
 ) -> np.ndarray:
     """Generate a single DeepDRR projection for the provided CT volume.
 
@@ -163,6 +166,13 @@ def render_deepdrr_projection(
             the uninverted attenuation map.
         apply_clahe: If True, apply CLAHE after tone mapping to boost local
             contrast.
+        bone_scale: Multiplier applied to bone attenuation coefficients to
+            boost bone contrast (e.g., 1.2 makes bone brighter).
+        slice_offset_mm: Offset (mm) along the projection axis. If slice_thickness_mm <= 0,
+            this translates the whole volume before projection. If slice_thickness_mm > 0,
+            it shifts the thin-slab center (positive moves toward +X after rotations).
+        slice_thickness_mm: Slab thickness (mm) summed along the projection axis. If <=0,
+            uses the full volume (legacy behavior).
 
     Returns:
         uint8 numpy array shaped (H, W) with values stretched to [0, 255]. The
@@ -220,7 +230,26 @@ def render_deepdrr_projection(
 
     # Project along +X (axis=2) to mimic lateral view.
     proj_axis = 2
-    spacing_axis_cm = float(spacing[proj_axis]) / 10.0  # convert mm → cm
+    spacing_axis_mm = float(spacing[proj_axis])
+    spacing_axis_cm = spacing_axis_mm / 10.0  # convert mm → cm
+
+    use_slab = slice_thickness_mm is not None and slice_thickness_mm > 0.0
+    offset_mm = slice_offset_mm if slice_offset_mm is not None else 0.0
+    if use_slab:
+        vox_thick = max(1, int(round(slice_thickness_mm / max(spacing_axis_mm, 1e-6))))
+        offset_vox = int(round(offset_mm / max(spacing_axis_mm, 1e-6)))
+        center = int(np.clip(density.shape[proj_axis] // 2 + offset_vox, 0, density.shape[proj_axis] - 1))
+        start = max(0, min(center - vox_thick // 2, density.shape[proj_axis] - vox_thick))
+        end = start + vox_thick
+    else:
+        start, end = 0, density.shape[proj_axis]
+        if abs(offset_mm) > 1e-6:
+            shift_vox = float(offset_mm / max(spacing_axis_mm, 1e-6))
+            density = ndi.shift(density, shift=[0, 0, shift_vox], order=1, mode="constant", cval=0.0)
+            for key in list(material_masks.keys()):
+                material_masks[key] = ndi.shift(
+                    material_masks[key], shift=[0, 0, shift_vox], order=0, mode="constant", cval=0.0
+                )
 
     # Ensure masks align with density shape (due to reshape=True rotations).
     target_shape = density.shape
@@ -237,7 +266,12 @@ def render_deepdrr_projection(
     for name, mask in material_masks.items():
         if name == "air":
             continue  # ignore air contribution
-        mass = (density * mask).sum(axis=proj_axis) * spacing_axis_cm
+        if use_slab:
+            slicer = [slice(None)] * 3
+            slicer[proj_axis] = slice(start, end)
+            mass = (density * mask)[tuple(slicer)].sum(axis=proj_axis) * spacing_axis_cm
+        else:
+            mass = (density * mask).sum(axis=proj_axis) * spacing_axis_cm
         mass_thickness[name] = mass
 
     if not mass_thickness:
@@ -258,6 +292,8 @@ def render_deepdrr_projection(
         total = np.zeros_like(image)
         for name, mass in mass_thickness.items():
             coeff = material_objs[name].get_coefficients(energy_keV).mu_over_rho
+            if name.lower().startswith("bone") or "bone" in name.lower():
+                coeff = coeff * float(bone_scale)
             total += coeff * mass
         image += weight * np.exp(-total)
 

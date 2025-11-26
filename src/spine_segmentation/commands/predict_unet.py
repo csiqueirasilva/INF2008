@@ -124,6 +124,7 @@ def _predict_image(
             labels_json=None,
             alpha=alpha,
             ignore_label_map=False,
+            legend=True,
         )
 
         if clahe:
