@@ -45,17 +45,56 @@ def _apply_clahe(image: np.ndarray) -> np.ndarray:
     return clahe.apply(image)
 
 
-def _load_model(model_path: Path, device: torch.device) -> tuple[UNet, int]:
+def _load_model(model_path: Path, device: torch.device) -> tuple[UNet, int, dict]:
     checkpoint = _load_checkpoint(model_path, device)
     state_dict = checkpoint.get("model_state_dict")
     num_classes = checkpoint.get("num_classes")
     if state_dict is None or num_classes is None:
         raise click.ClickException("Checkpoint missing required keys ('model_state_dict', 'num_classes')")
 
-    model = UNet(n_channels=1, n_classes=int(num_classes)).to(device)
+    cfg = checkpoint.get("config", {}) or {}
+    num_input_channels = int(cfg.get("num_input_channels", 1))
+    model = UNet(n_channels=num_input_channels, n_classes=int(num_classes)).to(device)
     model.load_state_dict(state_dict)
     model.eval()
-    return model, int(num_classes)
+    channel_cfg = {
+        "use_otsu_channel": bool(cfg.get("use_otsu_channel", False)),
+        "use_coord_channels": bool(cfg.get("use_coord_channels", False)),
+        "otsu_blur_kernel": int(cfg.get("otsu_blur_kernel", 5)),
+        "num_input_channels": num_input_channels,
+    }
+    return model, int(num_classes), channel_cfg
+
+
+def _build_input_channels(
+    image_gray: np.ndarray,
+    apply_clahe: bool,
+    use_otsu_channel: bool,
+    use_coord_channels: bool,
+    otsu_blur_kernel: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (C,H,W) float32 in [0,1] and the base image used for overlays (H,W) uint8."""
+    base = _apply_clahe(image_gray) if apply_clahe else image_gray
+    channels = [base.astype(np.float32) / 255.0]
+
+    if use_otsu_channel:
+        if otsu_blur_kernel <= 0:
+            otsu_blur_kernel = 1
+        if otsu_blur_kernel % 2 == 0:
+            otsu_blur_kernel += 1
+        blur = cv2.GaussianBlur(base, (otsu_blur_kernel, otsu_blur_kernel), 0)
+        _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        channels.append(otsu.astype(np.float32) / 255.0)
+
+    if use_coord_channels:
+        h, w = base.shape
+        ys = np.linspace(0.0, 1.0, h, dtype=np.float32)
+        xs = np.linspace(0.0, 1.0, w, dtype=np.float32)
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+        channels.extend([yy, xx])
+
+    stacked = np.stack(channels, axis=0)  # (C, H, W)
+    return stacked.astype(np.float32), base
 
 
 def _predict_image(
@@ -66,21 +105,28 @@ def _predict_image(
     mask_out: Path | None,
     alpha: float,
     clahe: bool,
+    use_otsu_channel: bool,
+    use_coord_channels: bool,
+    otsu_blur_kernel: int,
 ) -> dict:
     image = _load_image(image_path)
-    processed = image
+    tensor_np, base_for_overlay = _build_input_channels(
+        image_gray=image,
+        apply_clahe=clahe,
+        use_otsu_channel=use_otsu_channel,
+        use_coord_channels=use_coord_channels,
+        otsu_blur_kernel=otsu_blur_kernel,
+    )
     if clahe:
-        processed = _apply_clahe(image)
         click.echo("✨ Applied CLAHE preprocessing")
 
-    tensor = torch.from_numpy(processed.astype(np.float32) / 255.0).unsqueeze(0).unsqueeze(0)
-    tensor = tensor.to(device)
+    tensor = torch.from_numpy(tensor_np).unsqueeze(0).to(device)  # (1, C, H, W)
 
     with torch.no_grad():
         logits = model(tensor)
         prediction = torch.argmax(logits, dim=1).squeeze(0).detach().cpu().numpy().astype(np.uint8)
 
-    if prediction.shape != processed.shape:
+    if prediction.shape != base_for_overlay.shape:
         raise click.ClickException("Predicted mask shape does not match input image dimensions")
 
     unique_ids, counts = np.unique(prediction, return_counts=True)
@@ -128,14 +174,14 @@ def _predict_image(
         )
 
         if clahe:
-            base_rgb = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+            base_rgb = cv2.cvtColor(base_for_overlay, cv2.COLOR_GRAY2BGR)
             overlay = cv2.addWeighted(color_mask, alpha, base_rgb, 1.0 - alpha, 0.0)
 
         if not cv2.imwrite(str(overlay_out), overlay):
             raise click.ClickException(f"Failed to write overlay to {overlay_out}")
         if clahe:
             clahe_image_path = overlay_out.with_name(f"{overlay_out.stem}_clahe.png")
-            if not cv2.imwrite(str(clahe_image_path), processed):
+            if not cv2.imwrite(str(clahe_image_path), base_for_overlay):
                 raise click.ClickException(f"Failed to write CLAHE image to {clahe_image_path}")
     finally:
         if cleanup_mask:
@@ -186,8 +232,16 @@ def _predict_image(
               help="Blend factor passed to rebuild-overlay (colour mask vs grayscale)")
 @click.option("--clahe/--no-clahe", default=False, show_default=True,
               help="Apply CLAHE contrast enhancement before inference")
+@click.option("--use-otsu-channel/--no-otsu-channel", default=None, show_default=True,
+              help="Append an Otsu foreground channel (default: follow checkpoint).")
+@click.option("--use-coord-channels/--no-coord-channels", default=None, show_default=True,
+              help="Append normalized y/x coordinate channels (default: follow checkpoint).")
+@click.option("--otsu-blur-kernel", type=int, default=None,
+              help="Gaussian blur kernel before Otsu when --use-otsu-channel is enabled (default: checkpoint or 5).")
 def predict_unet(model_path: Path, image_path: Path, overlay_out: Path, mask_out: Path | None,
-                 device: str | None, alpha: float, clahe: bool) -> None:
+                 device: str | None, alpha: float, clahe: bool,
+                 use_otsu_channel: bool | None, use_coord_channels: bool | None,
+                 otsu_blur_kernel: int | None) -> None:
     """Run the trained UNet on a single image and produce an overlay preview."""
 
     model_path = model_path.expanduser().resolve()
@@ -197,7 +251,18 @@ def predict_unet(model_path: Path, image_path: Path, overlay_out: Path, mask_out
 
     torch_device = _resolve_device(device)
 
-    model, _ = _load_model(model_path, torch_device)
+    model, _, cfg = _load_model(model_path, torch_device)
+
+    use_otsu = cfg["use_otsu_channel"] if use_otsu_channel is None else use_otsu_channel
+    use_coord = cfg["use_coord_channels"] if use_coord_channels is None else use_coord_channels
+    blur_k = cfg["otsu_blur_kernel"] if otsu_blur_kernel is None else otsu_blur_kernel
+    actual_channels = 1 + (1 if use_otsu else 0) + (2 if use_coord else 0)
+    if actual_channels != cfg.get("num_input_channels", 1):
+        raise click.ClickException(
+            f"Model expects {cfg.get('num_input_channels', 1)} input channels, "
+            f"but flags resolve to {actual_channels}. "
+            "Pass matching --use-otsu-channel/--use-coord-channels flags."
+        )
 
     _predict_image(
         model=model,
@@ -207,6 +272,9 @@ def predict_unet(model_path: Path, image_path: Path, overlay_out: Path, mask_out
         mask_out=mask_out,
         alpha=alpha,
         clahe=clahe,
+        use_otsu_channel=use_otsu,
+        use_coord_channels=use_coord,
+        otsu_blur_kernel=blur_k,
     )
 
 
@@ -229,8 +297,16 @@ def predict_unet(model_path: Path, image_path: Path, overlay_out: Path, mask_out
               help="Blend factor passed to rebuild-overlay")
 @click.option("--clahe/--no-clahe", default=False, show_default=True,
               help="Apply CLAHE contrast enhancement before inference")
+@click.option("--use-otsu-channel/--no-otsu-channel", default=None, show_default=True,
+              help="Append an Otsu foreground channel (default: follow checkpoint).")
+@click.option("--use-coord-channels/--no-coord-channels", default=None, show_default=True,
+              help="Append normalized y/x coordinate channels (default: follow checkpoint).")
+@click.option("--otsu-blur-kernel", type=int, default=None,
+              help="Gaussian blur kernel before Otsu when --use-otsu-channel is enabled (default: checkpoint or 5).")
 def predict_unet_batch(model_path: Path, image_dir: Path, pattern: str, overlay_dir: Path, mask_dir: Path | None,
-                       summary_csv: Path | None, device: str | None, alpha: float, clahe: bool) -> None:
+                       summary_csv: Path | None, device: str | None, alpha: float, clahe: bool,
+                       use_otsu_channel: bool | None, use_coord_channels: bool | None,
+                       otsu_blur_kernel: int | None) -> None:
     """Run UNet inference across all images in a directory."""
 
     model_path = model_path.expanduser().resolve()
@@ -251,7 +327,17 @@ def predict_unet_batch(model_path: Path, image_dir: Path, pattern: str, overlay_
         raise click.ClickException(f"No files matched pattern '{pattern}' under {image_dir}")
 
     torch_device = _resolve_device(device)
-    model, _ = _load_model(model_path, torch_device)
+    model, _, cfg = _load_model(model_path, torch_device)
+    use_otsu = cfg["use_otsu_channel"] if use_otsu_channel is None else use_otsu_channel
+    use_coord = cfg["use_coord_channels"] if use_coord_channels is None else use_coord_channels
+    blur_k = cfg["otsu_blur_kernel"] if otsu_blur_kernel is None else otsu_blur_kernel
+    actual_channels = 1 + (1 if use_otsu else 0) + (2 if use_coord else 0)
+    if actual_channels != cfg.get("num_input_channels", 1):
+        raise click.ClickException(
+            f"Model expects {cfg.get('num_input_channels', 1)} input channels, "
+            f"but flags resolve to {actual_channels}. "
+            "Pass matching --use-otsu-channel/--use-coord-channels flags."
+        )
 
     results = []
     detected = 0
@@ -271,6 +357,9 @@ def predict_unet_batch(model_path: Path, image_dir: Path, pattern: str, overlay_
             mask_out=mask_path,
             alpha=alpha,
             clahe=clahe,
+            use_otsu_channel=use_otsu,
+            use_coord_channels=use_coord,
+            otsu_blur_kernel=blur_k,
         )
         results.append(result)
         if result["detections"]:

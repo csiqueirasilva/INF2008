@@ -44,6 +44,9 @@ outputs
 # prepared data
 prepared
 
+# downloaded demo datasets
+coco8
+
 # output from inference executions
 runs
 

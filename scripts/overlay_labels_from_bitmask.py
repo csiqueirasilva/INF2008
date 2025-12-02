@@ -35,7 +35,7 @@ def overlay_from_bitmask(base: np.ndarray, bitmask: np.ndarray, max_bits: int = 
     return cv2.addWeighted(base_bgr, 1.0 - alpha, color, alpha, 0.0)
 
 
-def process_run(run_dir: Path):
+def process_run(run_dir: Path, out_root: Path | None = None):
     deepdrr_dir = run_dir / "deepdrr"
     bitmask_circ_path = deepdrr_dir / "label_bitmask_circular_synth.png"
     bitmask_cropped_path = deepdrr_dir / "label_bitmask_cropped_letterboxed.png"
@@ -50,25 +50,30 @@ def process_run(run_dir: Path):
         circ = cv2.imread(str(circ_path), cv2.IMREAD_GRAYSCALE)
         if bitmask_circ is not None and circ is not None:
             circ_overlay = overlay_from_bitmask(circ, bitmask_circ)
-            cv2.imwrite(str(deepdrr_dir / "label_overlay_circular.png"), circ_overlay)
+            target = (out_root if out_root else deepdrr_dir) / "label_overlay_circular.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(target), circ_overlay)
 
     if clahe_path.exists() and bitmask_cropped_path.exists():
         bitmask_crop = cv2.imread(str(bitmask_cropped_path), cv2.IMREAD_UNCHANGED)
         clahe = cv2.imread(str(clahe_path), cv2.IMREAD_GRAYSCALE)
         if bitmask_crop is not None and clahe is not None:
             clahe_overlay = overlay_from_bitmask(clahe, bitmask_crop)
-            cv2.imwrite(str(deepdrr_dir / "label_overlay_clahe2.png"), clahe_overlay)
+            target = (out_root if out_root else deepdrr_dir) / "label_overlay_clahe2.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(target), clahe_overlay)
     return True
 
 
 def main():
     ap = argparse.ArgumentParser(description="Overlay label_bitmask onto circular-synth.png and clahe2.png.")
     ap.add_argument("--runs", nargs="+", required=True, help="DeepDRR run directories (each contains deepdrr/...)")
+    ap.add_argument("--out-dir", type=Path, default=None, help="Optional root to write overlays (defaults to each run's deepdrr).")
     args = ap.parse_args()
 
     ok = 0
     for run in args.runs:
-        if process_run(Path(run)):
+        if process_run(Path(run), args.out_dir):
             ok += 1
     print(f"Processed {ok} runs")
 

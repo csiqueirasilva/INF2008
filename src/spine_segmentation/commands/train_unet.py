@@ -49,11 +49,21 @@ class SpineDataset(Dataset):
         mask_paths: Sequence[Path],
         transform: Optional[Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]] = None,
         num_classes: Optional[int] = None,
+        use_otsu_channel: bool = False,
+        use_coord_channels: bool = False,
+        otsu_blur_kernel: int = 5,
     ):
         assert len(image_paths) == len(mask_paths)
         self.image_paths = list(image_paths)
         self.mask_paths = list(mask_paths)
         self.transform = transform
+        self.use_otsu_channel = use_otsu_channel
+        self.use_coord_channels = use_coord_channels
+        if otsu_blur_kernel <= 0:
+            otsu_blur_kernel = 1
+        if otsu_blur_kernel % 2 == 0:
+            otsu_blur_kernel += 1
+        self.otsu_blur_kernel = otsu_blur_kernel
         if num_classes is None:
             max_label = 0
             for mask_path in self.mask_paths:
@@ -79,13 +89,28 @@ class SpineDataset(Dataset):
         if mask is None:
             raise FileNotFoundError(f"Failed to read mask: {mask_path}")
 
-        img = img.astype(np.float32) / 255.0
+        img_f = img.astype(np.float32) / 255.0
+        channels = [img_f]
+
+        if self.use_otsu_channel:
+            blur = cv2.GaussianBlur(img, (self.otsu_blur_kernel, self.otsu_blur_kernel), 0)
+            _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            channels.append((otsu.astype(np.float32) / 255.0))
+
+        if self.use_coord_channels:
+            h, w = img.shape
+            ys = np.linspace(0.0, 1.0, h, dtype=np.float32)
+            xs = np.linspace(0.0, 1.0, w, dtype=np.float32)
+            yy, xx = np.meshgrid(ys, xs, indexing="ij")
+            channels.extend([yy, xx])
+
+        img_stacked = np.stack(channels, axis=-1)  # (H, W, C)
         mask = mask.astype(np.int64)
 
         if self.transform is not None:
-            img, mask = self.transform(img, mask)
+            img_stacked, mask = self.transform(img_stacked, mask)
 
-        img = np.expand_dims(img, axis=0)  # (1, H, W)
+        img = np.transpose(img_stacked, (2, 0, 1))  # (C, H, W)
 
         return torch.from_numpy(img), torch.from_numpy(mask)
 
@@ -93,7 +118,7 @@ class SpineDataset(Dataset):
 def _augment_pair(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Apply simple spatial and intensity augmentations in-place safe manner."""
 
-    augmented_img = img.copy()
+    augmented_img = img.copy()  # (H, W, C)
     augmented_mask = mask.copy()
 
     # Horizontal flip (mirror) keeps anatomy plausible for lateral views
@@ -104,7 +129,7 @@ def _augment_pair(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.nda
     # Small rotation with reflection padding, preserves label discreteness
     if random.random() < 0.3:
         angle = random.uniform(-10.0, 10.0)
-        h, w = augmented_img.shape
+        h, w, _ = augmented_img.shape
         matrix = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
         augmented_img = cv2.warpAffine(
             augmented_img,
@@ -121,16 +146,16 @@ def _augment_pair(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.nda
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
-    # Mild intensity scaling and bias
+    # Mild intensity scaling and bias on the first channel (assumed clahe/base image)
     if random.random() < 0.4:
         scale = random.uniform(0.9, 1.1)
         bias = random.uniform(-0.05, 0.05)
-        augmented_img = np.clip(augmented_img * scale + bias, 0.0, 1.0)
+        augmented_img[..., 0] = np.clip(augmented_img[..., 0] * scale + bias, 0.0, 1.0)
 
-    # Low magnitude Gaussian noise keeps denoising behaviour realistic
+    # Low magnitude Gaussian noise keeps denoising behaviour realistic (first channel only)
     if random.random() < 0.3:
-        noise = np.random.normal(0.0, 0.015, size=augmented_img.shape).astype(np.float32)
-        augmented_img = np.clip(augmented_img + noise, 0.0, 1.0)
+        noise = np.random.normal(0.0, 0.015, size=augmented_img[..., 0].shape).astype(np.float32)
+        augmented_img[..., 0] = np.clip(augmented_img[..., 0] + noise, 0.0, 1.0)
 
     return augmented_img.astype(np.float32), augmented_mask.astype(np.int64)
 
@@ -407,6 +432,10 @@ class TrainConfig:
     lr_patience: int
     lr_min: float
     log_dir: Optional[Path]
+    use_otsu_channel: bool
+    use_coord_channels: bool
+    otsu_blur_kernel: int
+    num_input_channels: int
 
 
 def _load_manifest(csv_path: Path) -> pd.DataFrame:
@@ -495,6 +524,10 @@ def _save_metadata(
         "lr_min": config.lr_min,
         "log_dir": str(config.log_dir) if config.log_dir is not None else None,
         "num_classes": num_classes,
+        "num_input_channels": config.num_input_channels,
+        "use_otsu_channel": config.use_otsu_channel,
+        "use_coord_channels": config.use_coord_channels,
+        "otsu_blur_kernel": config.otsu_blur_kernel,
         "best_model": str(best_path),
         "best_epoch": best_epoch,
         "best_metrics": best_metrics,
@@ -550,11 +583,18 @@ def _load_checkpoint(path: Path, map_location: torch.device) -> dict:
               help="Lower bound for the learning rate scheduler")
 @click.option("--log-dir", type=click.Path(path_type=Path), default=None,
               help="Optional directory for TensorBoard event files (defaults to out_dir/tensorboard)")
+@click.option("--use-otsu-channel/--no-otsu-channel", default=False, show_default=True,
+              help="Append an Otsu foreground channel (computed with --otsu-blur-kernel) to the input.")
+@click.option("--use-coord-channels/--no-coord-channels", default=False, show_default=True,
+              help="Append normalized y/x coordinate channels to the input.")
+@click.option("--otsu-blur-kernel", type=int, default=5, show_default=True,
+              help="Gaussian blur kernel before Otsu when --use-otsu-channel is enabled (odd, >=1).")
 def train_unet(csv_path: Path, out_dir: Path, epochs: int, batch_size: int, learning_rate: float,
               val_fraction: float, test_fraction: float, num_workers: int, device: str | None,
               seed: int, patience: int, min_delta: float, monitor: str, clip_grad_norm: float,
               amp: bool, augment: bool, lr_factor: float, lr_patience: int, lr_min: float,
-              log_dir: Path | None) -> None:
+              log_dir: Path | None, use_otsu_channel: bool, use_coord_channels: bool,
+              otsu_blur_kernel: int) -> None:
     """Train a simple UNet using the manifest generated by build_pseudo_dataset.sh."""
 
     out_dir = out_dir.expanduser().resolve()
@@ -566,26 +606,51 @@ def train_unet(csv_path: Path, out_dir: Path, epochs: int, batch_size: int, lear
     image_paths = [Path(p).expanduser().resolve() for p in df["image"].tolist()]
     mask_paths = [Path(p).expanduser().resolve() for p in df["mask_labels"].tolist()]
 
-    dataset = SpineDataset(image_paths, mask_paths)
+    dataset = SpineDataset(
+        image_paths,
+        mask_paths,
+        use_otsu_channel=use_otsu_channel,
+        use_coord_channels=use_coord_channels,
+        otsu_blur_kernel=otsu_blur_kernel,
+    )
     num_classes = dataset.num_classes
 
     train_paths, val_paths, test_paths = _split_dataset(
         dataset.image_paths, dataset.mask_paths, val_fraction, test_fraction, seed
     )
 
+    num_input_channels = 1 + (1 if use_otsu_channel else 0) + (2 if use_coord_channels else 0)
+
     train_dataset = SpineDataset(
         train_paths[0],
         train_paths[1],
         transform=_augment_pair if augment else None,
         num_classes=num_classes,
+        use_otsu_channel=use_otsu_channel,
+        use_coord_channels=use_coord_channels,
+        otsu_blur_kernel=otsu_blur_kernel,
     )
     val_dataset = (
-        SpineDataset(val_paths[0], val_paths[1], num_classes=num_classes)
+        SpineDataset(
+            val_paths[0],
+            val_paths[1],
+            num_classes=num_classes,
+            use_otsu_channel=use_otsu_channel,
+            use_coord_channels=use_coord_channels,
+            otsu_blur_kernel=otsu_blur_kernel,
+        )
         if val_paths is not None
         else None
     )
     test_dataset = (
-        SpineDataset(test_paths[0], test_paths[1], num_classes=num_classes)
+        SpineDataset(
+            test_paths[0],
+            test_paths[1],
+            num_classes=num_classes,
+            use_otsu_channel=use_otsu_channel,
+            use_coord_channels=use_coord_channels,
+            otsu_blur_kernel=otsu_blur_kernel,
+        )
         if test_paths is not None
         else None
     )
@@ -639,7 +704,7 @@ def train_unet(csv_path: Path, out_dir: Path, epochs: int, batch_size: int, lear
     amp_enabled = amp and torch_device.type == "cuda"
     scaler = GradScaler(enabled=amp_enabled)
 
-    model = UNet(n_channels=1, n_classes=num_classes).to(torch_device)
+    model = UNet(n_channels=num_input_channels, n_classes=num_classes).to(torch_device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -690,6 +755,10 @@ def train_unet(csv_path: Path, out_dir: Path, epochs: int, batch_size: int, lear
         lr_patience=lr_patience,
         lr_min=lr_min,
         log_dir=log_dir_path,
+        use_otsu_channel=use_otsu_channel,
+        use_coord_channels=use_coord_channels,
+        otsu_blur_kernel=otsu_blur_kernel,
+        num_input_channels=num_input_channels,
     )
 
     history: List[dict] = []

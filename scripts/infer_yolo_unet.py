@@ -20,6 +20,11 @@ from ultralytics import YOLO
 
 from spine_segmentation.commands.predict_unet import _load_model, _predict_image, _resolve_device
 
+def double_clahe(img: np.ndarray, clip1: float = 2.0, tile1: int = 8, clip2: float = 2.0, tile2: int = 8) -> np.ndarray:
+    clahe1 = cv2.createCLAHE(clipLimit=clip1, tileGridSize=(tile1, tile1)).apply(img)
+    clahe2 = cv2.createCLAHE(clipLimit=clip2, tileGridSize=(tile2, tile2)).apply(clahe1)
+    return clahe2
+
 
 def letterbox(img: np.ndarray, target_w: int, target_h: int, color: int = 0) -> np.ndarray:
     h, w = img.shape[:2]
@@ -54,6 +59,7 @@ def main():
     ap.add_argument("--imgsz", type=int, default=384)
     ap.add_argument("--max-det", type=int, default=1)
     ap.add_argument("--alpha", type=float, default=0.45, help="Overlay blend factor")
+    ap.add_argument("--unet-clahe", action="store_true", help="Apply double CLAHE to crop before UNet (for CLAHE-only models).")
     args = ap.parse_args()
 
     masks = sorted(args.mask_dir.glob(args.pattern))
@@ -117,11 +123,19 @@ def main():
         overlay_path = out_overlays / f"{stem}_overlay.png"
         pred_path = out_preds / f"{stem}_pred.png"
 
-        # Run UNet on the cropped mask (already processed as Otsu).
+        # Run UNet on the cropped mask (optionally apply CLAHE2).
+        unet_input = crop_mask_lb
+        if args.unet_clahe:
+            unet_input = double_clahe(unet_input)
+            cv2.imwrite(str(out_crops / f"{stem}_crop_clahe2.png"), unet_input)
+            unet_image_path = out_crops / f"{stem}_crop_clahe2.png"
+        else:
+            unet_image_path = crop_path
+
         _predict_image(
             model=model_unet,
             device=device,
-            image_path=crop_path,
+            image_path=unet_image_path,
             overlay_out=overlay_path,
             mask_out=pred_path,
             alpha=args.alpha,

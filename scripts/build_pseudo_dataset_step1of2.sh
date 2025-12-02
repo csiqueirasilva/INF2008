@@ -1,11 +1,11 @@
 CT_ROOT=data/CTSpine1K/raw_data/volumes/HNSCC-3DCT-RT
 LBL_ROOT=data/CTSpine1K/raw_data/labels/HNSCC-3DCT-RT
 FRAME=data/frames/50/v50_f145.png
-OUT_ROOT=outputs/dataset_synth_headneck_2
-PIXEL_MM=0.7
+OUT_ROOT=outputs/dataset_synth_headneck_4
+PIXEL_MM=0.1
 # Set to 0 to project the full volume; >0 enables thin-slab mode (mm).
 SLICE_THICKNESS_MM=0.0
-OFFSETS_MM=("-0.8" "-0.6" "-0.4" "-0.2" "0.0" "0.2" "0.4" "0.6" "0.8")
+OFFSETS_MM=("0.0")
 
 mkdir -p "$OUT_ROOT"
 
@@ -35,7 +35,7 @@ for ct in "$CT_ROOT"/*.nii.gz; do
       --zoom-factor 2.25 --pan-x-px -25 --pan-y-px 30 \
       --no-noise --spectrum 60KV_AL35 --bone-scale 1.35 \
       --no-hist-match --no-edge-enhance \
-      --otsu-source clahe2 --blur-kernel 5 \
+      --otsu-source clahe2 --blur-kernel 1 \
       --slice-offset-mm "$offset" --slice-thickness-mm "$SLICE_THICKNESS_MM" \
       --save-bbox --crop-to-bbox --match-frame-size --crop-margin 0.05 \
       --letterbox-after-crop --letterbox-color 0 --letterbox-pad-only \

@@ -343,7 +343,7 @@ def _parse_label_ids(spec: str) -> tuple[int, ...]:
 
 
 def _project_label_volume(
-    label_volume_path: Path,
+    label_volume_path: Path | None,
     yaw: float,
     pitch: float,
     roll: float,
@@ -351,13 +351,20 @@ def _project_label_volume(
     native_resolution: bool,
     sensor_height: int,
     sensor_width: int | None,
+    label_volume: np.ndarray | None = None,
+    slice_offset_mm: float = 0.0,
+    slice_thickness_mm: float = 0.0,
+    spacing_z: float = 1.0,
 ) -> np.ndarray:
     """Project a 3D label volume with the same rotations as the DeepDRR render."""
     import nibabel as nib
     import scipy.ndimage as ndi
 
-    nii = nib.load(str(label_volume_path))
-    lbl = np.asarray(nii.get_fdata(), dtype=np.int16)
+    if label_volume is None:
+        nii = nib.load(str(label_volume_path))
+        lbl = np.asarray(nii.get_fdata(), dtype=np.int16)
+    else:
+        lbl = np.asarray(label_volume, dtype=np.int16)
     # Reorder to (Z, Y, X) matching deepdrr_bridge
     lbl = np.transpose(lbl, (2, 1, 0))
 
@@ -372,6 +379,21 @@ def _project_label_volume(
         return out
 
     lbl = rotate(lbl, order=0)
+
+    # Apply slab mask along projection axis (axis=2) after rotation
+    if slice_thickness_mm > 0:
+        nz = lbl.shape[2]
+        mid = (nz - 1) / 2.0
+        center_idx = mid + slice_offset_mm / max(spacing_z, 1e-6)
+        half = (slice_thickness_mm / 2.0) / max(spacing_z, 1e-6)
+        z0 = int(np.floor(center_idx - half))
+        z1 = int(np.ceil(center_idx + half))
+        z0 = max(0, z0)
+        z1 = min(nz, z1)
+        mask = np.zeros_like(lbl, dtype=bool)
+        if z1 > z0:
+            mask[..., z0:z1] = True
+        lbl = np.where(mask, lbl, 0)
     # Project along +X (axis=2)
     proj = lbl.max(axis=2)
 
@@ -1228,8 +1250,14 @@ def deepdrr_pair(
         label_ct = label_ct.expanduser().resolve()
         if not label_ct.exists():
             raise click.ClickException(f"Label CT not found: {label_ct}")
+        import nibabel as nib  # local import to avoid hard dep if not used
+        lbl_nii = nib.load(str(label_ct))
+        spacing_z = lbl_nii.header.get_zooms()[2] if len(lbl_nii.header.get_zooms()) > 2 else 1.0
+        lbl_vol = lbl_nii.get_fdata().astype(np.int16)
+
         projected_labels = _project_label_volume(
-            label_volume_path=label_ct,
+            label_volume_path=None,
+            label_volume=lbl_vol,
             yaw=yaw,
             pitch=pitch,
             roll=roll,
@@ -1237,6 +1265,9 @@ def deepdrr_pair(
             native_resolution=native_resolution,
             sensor_height=sensor_height,
             sensor_width=sensor_width,
+            slice_offset_mm=slice_offset_mm,
+            slice_thickness_mm=slice_thickness_mm,
+            spacing_z=spacing_z,
         )
         projected_labels_raw = projected_labels.copy()
 
@@ -1345,22 +1376,30 @@ def deepdrr_pair(
             x0, y0, x1, y1 = bbox
             bw = x1 - x0 + 1
             bh = y1 - y0 + 1
-            expand_x = int(round(bw * crop_margin))
-            expand_y = int(round(bh * crop_margin))
-            x0 = max(0, x0 - expand_x)
-            y0 = max(0, y0 - expand_y)
-            x1 = min(orig_w - 1, x1 + expand_x)
-            y1 = min(orig_h - 1, y1 + expand_y)
 
-            def _crop(arr: np.ndarray) -> np.ndarray:
-                return arr[y0:y1 + 1, x0:x1 + 1]
+            # Skip pathological tiny crops (e.g., thin slabs with almost no mask)
+            MIN_CROP_SIZE = 64
+            if bw < MIN_CROP_SIZE or bh < MIN_CROP_SIZE:
+                click.echo(
+                    f"Skipping bbox crop (too small: {bw}x{bh}); keeping full frame for stability."
+                )
+            else:
+                expand_x = int(round(bw * crop_margin))
+                expand_y = int(round(bh * crop_margin))
+                x0 = max(0, x0 - expand_x)
+                y0 = max(0, y0 - expand_y)
+                x1 = min(orig_w - 1, x1 + expand_x)
+                y1 = min(orig_h - 1, y1 + expand_y)
 
-            drr_img = _crop(drr_img)
-            if crop_frame:
-                frame_img = _crop(frame_img)
-            projected_labels = _crop(projected_labels)
+                def _crop(arr: np.ndarray) -> np.ndarray:
+                    return arr[y0:y1 + 1, x0:x1 + 1]
 
-            # We will enforce final sizing after this block.
+                drr_img = _crop(drr_img)
+                if crop_frame:
+                    frame_img = _crop(frame_img)
+                projected_labels = _crop(projected_labels)
+
+                # We will enforce final sizing after this block.
 
     # Enforce final size back to original (base_h, base_w) via letterbox or resize.
     if (drr_img.shape[0], drr_img.shape[1]) != (base_h, base_w):

@@ -107,3 +107,32 @@ poetry run yolo detect predict \
 ## 7) Output
 - YOLO: bbox of neck on full-frame mask.
 - UNet: per-pixel vertebra bitmask on the cropped panel (C1–C7), which can be recoloured or overlaid for visualization.
+
+## Debugging IoU on training outputs
+- To verify the UNet is learning correctly, run inference on the training crops and compute IoU/Dice against the GT bitmasks:
+  ```bash
+  poetry run spine predict-unet-batch \
+    --model runs/unet_cropped_flat/unet_best.pt \
+    --image-dir prepared/unet_cropped_flat/images \
+    --overlay-dir outputs/unet_cropped_flat_train_overlays \
+    --mask-dir outputs/unet_cropped_flat_train_preds \
+    --pattern "*.png"
+
+  poetry run python scripts/eval_unet_iou.py \
+    --gt-dir prepared/unet_cropped_flat/masks \
+    --pred-dir outputs/unet_cropped_flat_train_preds \
+    --classes 1,2,4,8,16,32,64
+  ```
+- This reports per-class IoU (C1–C7) and mean IoU over the training set to confirm alignment between inputs and labels.
+
+### Visual GT vs Pred overlays
+- To create YOLO-style side-by-side overlays (GT on the left, pred on the right) for inspection:
+  ```bash
+  poetry run python scripts/overlay_gt_pred_comparison.py \
+    --gt-dir prepared/unet_cropped_flat/masks \
+    --pred-dir outputs/unet_cropped_flat_train_preds \
+    --image-dir prepared/unet_cropped_flat/images \
+    --pred-suffix _mask \
+    --out-dir outputs/unet_cropped_flat_gt_pred
+  ```
+- Overlays are saved as `*_gt_pred.png`, useful for presentations and qualitative checks.
